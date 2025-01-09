@@ -1,102 +1,89 @@
 import cv2 as cv
 import time
-import geocoder
 import os
 
-# Reading label names from obj.names file
-class_name = []
-with open(os.path.join("project_files", 'obj.names'), 'r') as f:
-    class_name = [cname.strip() for cname in f.readlines()]
+# Configure video source
+#video_source = input("Enter 'file' for local video or 'url' for Raspberry Pi live feed: ").strip().lower()
+video_source = "file"
+#video_source = "url"
 
-# Importing model weights and config file
-# Defining the model parameters
-net1 = cv.dnn.readNet('project_files/yolov4_tiny.weights', 'project_files/yolov4_tiny.cfg')
-net1.setPreferableBackend(cv.dnn.DNN_BACKEND_OPENCV)  # Use OpenCV backend for Raspberry Pi
-net1.setPreferableTarget(cv.dnn.DNN_TARGET_CPU)       # Use CPU as target
-model1 = cv.dnn_DetectionModel(net1)
-model1.setInputParams(size=(640, 480), scale=1/255, swapRB=True)
+if video_source == 'file':
+    #video_path = input("Enter the path to your local video: ").strip()
+    video_path = r"D:\Sublime Text\Python\pothole-detection\Potholes.mp4"
+    video_path = "D:\\Sublime Text\\Python\\pothole-detection\\Codlea_Brasov.mp4"
+    cap = cv.VideoCapture(video_path)
+elif video_source == 'url':
+    url = input("Enter the URL of the Raspberry Pi live feed: ").strip()
+    cap = cv.VideoCapture(url)
+else:
+    print("Invalid input! Exiting...")
+    exit()
 
-# Defining the video source (0 for camera or file name for video)
-cap = cv.VideoCapture("Potholes.mp4") 
+# Check if the video source is valid
+if not cap.isOpened():
+    print("Failed to open video source!")
+    exit()
+
+# Load YOLO model
+net = cv.dnn.readNet('project_files/yolov4_tiny.weights', 'project_files/yolov4_tiny.cfg')
+net.setPreferableBackend(cv.dnn.DNN_BACKEND_OPENCV)
+net.setPreferableTarget(cv.dnn.DNN_TARGET_CPU)
+model = cv.dnn_DetectionModel(net)
+model.setInputParams(size=(640, 480), scale=1/255, swapRB=True)
 
 # Get input video FPS and dimensions
+width = int(cap.get(cv.CAP_PROP_FRAME_WIDTH))
+height = int(cap.get(cv.CAP_PROP_FRAME_HEIGHT))
 input_fps = cap.get(cv.CAP_PROP_FPS)
-width = cap.get(cv.CAP_PROP_FRAME_WIDTH)
-height = cap.get(cv.CAP_PROP_FRAME_HEIGHT)
 
 # Desired FPS for processing
 desired_fps = 10
-frame_skip_interval = int(input_fps / desired_fps)
+frame_skip_interval = int(input_fps / desired_fps) if input_fps > desired_fps else 1
 
 # Initialize video writer for the result
 result = cv.VideoWriter('result.mp4', 
                         cv.VideoWriter_fourcc(*'mp4v'), 
                         desired_fps, 
-                        (int(width), int(height)))
+                        (width, height))
 
-# Parameters for result saving and coordinates
-g = geocoder.ip('me')
-result_path = "pothole_coordinates"
-os.makedirs(result_path, exist_ok=True)  # Ensure directory exists
-starting_time = time.time()
+# Detection parameters
 Conf_threshold = 0.5
 NMS_threshold = 0.4
-frame_counter = 0
-processed_frame_counter = 0
-i = 0
-b = 0
 
-# Detection loop
+# Start processing
+frame_counter = 0
 while True:
     ret, frame = cap.read()
-    frame_counter += 1
     if not ret:
+        print("End of video or stream.")
         break
 
-    # Skip frames to achieve desired FPS
+    # Skip frames to achieve the desired FPS
     if frame_counter % frame_skip_interval != 0:
+        frame_counter += 1
         continue
 
-    processed_frame_counter += 1
-    # Analyze the stream with detection model
-    classes, scores, boxes = model1.detect(frame, Conf_threshold, NMS_threshold)
+    # Perform object detection
+    classes, scores, boxes = model.detect(frame, Conf_threshold, NMS_threshold)
     for (classid, score, box) in zip(classes, scores, boxes):
-        label = "pothole"
-        x, y, w, h = box
-        recarea = w * h
-        area = width * height
-        # Drawing detection boxes and saving results
-        if len(scores) != 0 and scores[0] >= 0.70:
-            if (recarea / area) <= 0.1 and box[1] < 600:
-                cv.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 1)
-                cv.putText(frame, "%" + str(round(scores[0] * 100, 2)) + " " + label,
-                           (box[0], box[1] - 10), cv.FONT_HERSHEY_COMPLEX, 0.5, (255, 0, 0), 1)
-                if i == 0:
-                    cv.imwrite(os.path.join(result_path, 'pothole' + str(i) + '.jpg'), frame)
-                    with open(os.path.join(result_path, 'pothole' + str(i) + '.txt'), 'w') as f:
-                        f.write(str(g.latlng))
-                    i += 1
-                elif (time.time() - b) >= 2:
-                    cv.imwrite(os.path.join(result_path, 'pothole' + str(i) + '.jpg'), frame)
-                    with open(os.path.join(result_path, 'pothole' + str(i) + '.txt'), 'w') as f:
-                        f.write(str(g.latlng))
-                    b = time.time()
-                    i += 1
+        label = f'Pothole: {int(score * 100)}%'
+        cv.rectangle(frame, box, (0, 255, 0), 2)
+        cv.putText(frame, label, (box[0], box[1] - 10), cv.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
-    # Writing FPS on frame
-    endingTime = time.time() - starting_time
-    fps = processed_frame_counter / endingTime
-    cv.putText(frame, f'FPS: {fps:.2f}', (20, 50), 
-               cv.FONT_HERSHEY_COMPLEX, 0.7, (0, 255, 0), 2)
+    # Display the frame number
+    frame_counter += 1
+    cv.putText(frame, f'Frame: {frame_counter}', (20, 50), cv.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
 
-    # Showing and saving result
-    cv.imshow('frame', frame)
+    # Display the frame
+    cv.imshow('Live Feed', frame)
     result.write(frame)
-    key = cv.waitKey(1)
-    if key == ord('q'):
+
+    # Quit on pressing 'q'
+    if cv.waitKey(1) & 0xFF == ord('q'):
+        print("Exiting...")
         break
 
-# End
+# Cleanup
 cap.release()
 result.release()
 cv.destroyAllWindows()
